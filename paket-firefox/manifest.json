@@ -1,0 +1,36 @@
+{
+  "manifest_version": 2,
+  "name": "Paket",
+  "version": "1.0",
+  "description": "Save URL to Paket",
+  
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "{9fb7bcab-922a-4e37-8ed4-47ade014ee60}"
+    }
+  },
+  
+  "permissions": [
+    "activeTab",
+    "storage",
+    "http://*/*",
+    "https://*/*"
+  ],
+
+  "icons": {
+      "48": "icon.svg",
+      "96": "icon.svg"
+  },
+  
+  "browser_action": {
+    "default_icon": "icon.svg",
+    "default_popup": "popup.html",
+    "default_title": "Paket"
+  },
+  
+  "background": {
+    "scripts": ["background.js"],
+    "persistent": false
+  }
+}
+

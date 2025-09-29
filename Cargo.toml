@@ -1,0 +1,27 @@
+[package]
+name = "paket"
+version = "0.1.0"
+edition = "2024"
+authors = ["Andrii Pohrebniak"]
+
+[dependencies]
+anyhow = "1.0.98"
+axum = "0.8.4"
+tokio = { version = "1.44.2", default-features = false, features = ["net", "io-util", "rt-multi-thread", "time"] }
+tokio-rustls = "0.26.3"
+rustls = { version = "0.23.32", default-features = false, features = ["std"]}
+url = "2.5.4"
+serde = { version = "1.0.219", features = ["derive"] }
+httpdate = "1.0.3"
+duckdb = { version = "1.4.0", features = ["bundled"] }
+webpki-roots = "1.0.2"
+memchr = "2.7.5"
+uuid = { version = "1.18.1", features = ["v5"]}
+argh = "0.1.13"
+
+[profile.release]
+opt-level = "s"
+debug = false
+strip = true
+panic = "abort"
+

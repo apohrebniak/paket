@@ -1,0 +1,50 @@
+body {
+    font-family: system-ui;
+    line-height: 1.6;
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+.feed-info {
+    margin-bottom: 30px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid #ccc;
+}
+
+.feed-info p {
+    margin: 8px 0;
+}
+
+.feed-items {
+    list-style: none;
+    padding: 0;
+}
+
+.feed-items li {
+    margin-bottom: 20px;
+}
+
+.feed-item {
+    border: 1px solid #ccc;
+    padding: 20px;
+}
+
+.feed-item h2 {
+    margin: 0 0 10px 0;
+}
+
+.published-date {
+    font-size: 0.9em;
+    margin-bottom: 15px;
+}
+
+.delete-btn {
+    padding: 4px px;
+    cursor: pointer;
+}
+
+hr {
+    display: none;
+}
+
