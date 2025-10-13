@@ -39,11 +39,6 @@ fun MainScreen() {
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            Text(
-                text = "URL",
-                style = MaterialTheme.typography.titleMedium
-            )
-
             OutlinedTextField(
                 value = url,
                 onValueChange = { url = it },

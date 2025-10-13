@@ -21,9 +21,19 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.sp
+import okhttp3.FormBody
+import okhttp3.Headers
+import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import org.json.JSONObject
 import kotlin.concurrent.thread
 
 class ShareActivity : ComponentActivity() {
+    val client = OkHttpClient()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -49,19 +59,16 @@ class ShareActivity : ComponentActivity() {
 
         DisposableEffect(sharedLink) {
             val prefs = context.getSharedPreferences("LinkSharePrefs", Context.MODE_PRIVATE)
-            val url = prefs.getString("url", "") ?: ""
-            val headers = prefs.getString("headers", "") ?: ""
+            val url = prefs.getString("url", "http://localhost:8080/save")!!.toHttpUrl()
+            val headers = jsonToHeaders(prefs.getString("headers", "")!!)
 
             thread {
-                // Call placeholder function
                 processLink(sharedLink, url, headers)
 
-                // Show checkmark on main thread
                 handler.post {
                     isProcessing = false
                 }
 
-                // Wait 500ms then close
                 Thread.sleep(500)
                 handler.post {
                     onFinish()
@@ -89,12 +96,44 @@ class ShareActivity : ComponentActivity() {
         }
     }
 
-    private fun processLink(link: String, url: String, headers: String) {
-        // Placeholder function - implement your logic here
-        // Simulating some processing time
-        Thread.sleep(1000)
+    private fun processLink(articleUrl: String, paketUrl: HttpUrl, headers: Headers) {
+        articleUrl.toHttpUrlOrNull()?.let {
+            val url = it
 
-        // TODO: Implement actual link processing logic
-        // For example: send link to configured URL with headers
+            val form = FormBody.Builder()
+                .add("url", url.toString())
+                .build()
+            val request = Request.Builder()
+                .url(paketUrl)
+                .put(form)
+                .build()
+
+            client.newCall(request).execute().use { response ->
+            }
+        }
+    }
+
+    private fun jsonToHeaders(jsonString: String): Headers {
+        if (jsonString.isEmpty()) {
+            return Headers.EMPTY
+        }
+
+        val builder = Headers.Builder()
+
+        try {
+            val jsonObject = JSONObject(jsonString)
+            val keys = jsonObject.keys()
+
+            while (keys.hasNext()) {
+                val key = keys.next()
+                val value = jsonObject.getString(key)
+                builder.add(key, value)
+            }
+        } catch (e: Exception) {
+            // Return empty headers if JSON parsing fails
+            return Headers.Builder().build()
+        }
+
+        return builder.build()
     }
 }
