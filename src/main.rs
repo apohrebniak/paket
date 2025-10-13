@@ -97,7 +97,8 @@ async fn main() -> anyhow::Result<()> {
     )?;
     let db_connection = Arc::new(Mutex::new(db_connection));
 
-    let tcp_listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, args.port)).await?;
+    let port = args.port;
+    let tcp_listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, port)).await?;
 
     let router = Router::new()
         .route("/save", put(handle_save_article))
@@ -109,7 +110,7 @@ async fn main() -> anyhow::Result<()> {
             db_connection,
         });
 
-    println!("Serving...");
+    println!("Serving at {port} ...");
     axum::serve(tcp_listener, router).await?;
 
     Ok(())
