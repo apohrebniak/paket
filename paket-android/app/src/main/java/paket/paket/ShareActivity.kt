@@ -12,6 +12,7 @@ import androidx.compose.ui.Modifier
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.material3.CircularProgressIndicator
@@ -28,8 +29,10 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okio.IOException
 import org.json.JSONObject
 import kotlin.concurrent.thread
+import kotlin.jvm.Throws
 
 class ShareActivity : ComponentActivity() {
     val client = OkHttpClient()
@@ -55,6 +58,7 @@ class ShareActivity : ComponentActivity() {
     fun SharingScreen(sharedLink: String, onFinish: () -> Unit) {
         val context = LocalContext.current
         var isProcessing by remember { mutableStateOf(true) }
+        var isSuccess by remember { mutableStateOf(false)}
         val handler = remember { Handler(Looper.getMainLooper()) }
 
         DisposableEffect(sharedLink) {
@@ -63,7 +67,16 @@ class ShareActivity : ComponentActivity() {
             val headers = jsonToHeaders(prefs.getString("headers", "")!!)
 
             thread {
-                processLink(sharedLink, url, headers)
+                try {
+                    processLink(sharedLink, url, headers)
+
+                    handler.post {
+                        isSuccess = true
+                    }
+
+                } catch (e: Exception) {
+                    Log.e(null, null, e)
+                }
 
                 handler.post {
                     isProcessing = false
@@ -89,13 +102,19 @@ class ShareActivity : ComponentActivity() {
                     color = Color.White
                 )
             } else {
+                val text = if (isSuccess) {
+                    "\uD83D\uDC4D"
+                } else {
+                    "\uD83D\uDC4E"
+                }
                 Text(
-                    text = "✓", fontSize = 48.sp, color = Color.White
+                    text = text, fontSize = 48.sp, color = Color.White
                 )
             }
         }
     }
 
+    @Throws(IOException::class)
     private fun processLink(articleUrl: String, paketUrl: HttpUrl, headers: Headers) {
         articleUrl.toHttpUrlOrNull()?.let {
             val url = it
@@ -105,6 +124,7 @@ class ShareActivity : ComponentActivity() {
                 .build()
             val request = Request.Builder()
                 .url(paketUrl)
+                .headers(headers)
                 .put(form)
                 .build()
 
