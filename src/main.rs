@@ -8,6 +8,7 @@ use axum::response::Redirect;
 use axum::routing::get;
 use axum::routing::post;
 use axum::routing::put;
+use axum::serve::ListenerExt;
 use core::net::Ipv4Addr;
 use duckdb::Connection;
 use duckdb::params;
@@ -98,7 +99,11 @@ async fn main() -> anyhow::Result<()> {
     let db_connection = Arc::new(Mutex::new(db_connection));
 
     let port = args.port;
-    let tcp_listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, port)).await?;
+    let tcp_listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, port))
+        .await?
+        .tap_io(|tcp_stream| {
+            let _ = tcp_stream.set_nodelay(true);
+        });
 
     let router = Router::new()
         .route("/save", put(handle_save_article))

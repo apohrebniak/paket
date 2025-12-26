@@ -44,6 +44,7 @@ pub async fn request_document(url_str: &str) -> anyhow::Result<Document> {
         let host = url.host_str().unwrap();
 
         let tcp_stream = TcpStream::connect((host, port)).await?;
+        tcp_stream.set_nodelay(true)?;
 
         let response = match scheme {
             Scheme::Http => http_get(Stream::Plain(tcp_stream), url).await?,
