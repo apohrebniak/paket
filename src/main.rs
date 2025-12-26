@@ -80,11 +80,17 @@ struct App {
     db_connection: DbConnection,
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     let args: Args = argh::from_env();
     let args = Arc::new(args);
 
+    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+
+    runtime.block_on(async move { serve(args).await })?;
+    Ok(())
+}
+
+async fn serve(args: Arc<Args>) -> anyhow::Result<()> {
     init_tls_certs();
 
     let db_connection = Connection::open(&args.db)?;
