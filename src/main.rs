@@ -86,6 +86,7 @@ fn main() -> anyhow::Result<()> {
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_io()
+        .enable_time()
         .build()?;
 
     runtime.block_on(async move { serve(args).await })?;
