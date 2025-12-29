@@ -84,7 +84,9 @@ fn main() -> anyhow::Result<()> {
     let args: Args = argh::from_env();
     let args = Arc::new(args);
 
-    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .build()?;
 
     runtime.block_on(async move { serve(args).await })?;
     Ok(())
