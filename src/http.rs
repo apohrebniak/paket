@@ -13,6 +13,13 @@ use tokio_rustls::client::TlsStream;
 use url::ParseError;
 use url::Url;
 
+const HTTP_BUFFER_SIZE: usize = 4 * 1024;
+const HTML_TITLE_TAG: &str = "title";
+
+const _: () = const {
+        assert!(HTTP_BUFFER_SIZE >= HTML_TITLE_TAG.len());
+};
+
 static TLS_CONFIG: LazyLock<Arc<rustls::ClientConfig>> = LazyLock::new(|| {
     let mut root_cert_store = RootCertStore::empty();
     root_cert_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
@@ -81,10 +88,6 @@ pub struct HtmlBodyReader {
 
 impl HtmlBodyReader {
     pub async fn extract_title(&mut self) -> anyhow::Result<String> {
-        const PREFIX: &str = "title";
-
-        assert!(self.buffer.capacity() >= PREFIX.len());
-
         enum State {
             Start,
             Name,
@@ -104,14 +107,14 @@ impl HtmlBodyReader {
                         continue;
                     }
                     None => {
-                        let _ = self.buffer.drain(..self.buffer.len() - PREFIX.len());
+                        let _ = self.buffer.drain(..self.buffer.len() - HTML_TITLE_TAG.len());
                     }
                 },
                 State::Name => {
-                    if self.buffer.len() >= PREFIX.len() {
-                        let tag_name = &self.buffer.as_slice()[..PREFIX.len()];
+                    if self.buffer.len() >= HTML_TITLE_TAG.len() {
+                        let tag_name = &self.buffer.as_slice()[..HTML_TITLE_TAG.len()];
 
-                        let tag_found = PREFIX.eq_ignore_ascii_case(str::from_utf8(tag_name)?);
+                        let tag_found = HTML_TITLE_TAG.eq_ignore_ascii_case(str::from_utf8(tag_name)?);
 
                         if tag_found {
                             state = State::Attributes;
@@ -189,8 +192,6 @@ enum HttpResponse {
 }
 
 async fn http_get(mut stream: Stream, url: Url) -> anyhow::Result<HttpResponse> {
-    const HTTP_BUFFER_SIZE: usize = 4 * 1024;
-
     enum ExpectedHeader {
         ContentType,
         Location,
