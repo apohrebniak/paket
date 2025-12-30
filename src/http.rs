@@ -77,7 +77,7 @@ pub async fn request_document(url_str: &str) -> anyhow::Result<Document> {
 
 pub enum Document {
     Unsupported(Url),
-    Html(Url, Box<HtmlBodyReader>),
+    Html(Url, HtmlBodyReader),
     Pdf(Url),
 }
 
@@ -275,7 +275,7 @@ async fn http_get(mut stream: Stream, url: Url) -> anyhow::Result<HttpResponse> 
                                 stream: lines.stream,
                                 buffer: lines.buffer,
                             };
-                            Document::Html(url, Box::new(http_body_reader))
+                            Document::Html(url, http_body_reader)
                         }
                         "application/pdf" | "APPLICATION/PDF" => Document::Pdf(url),
                         _ => Document::Unsupported(url),
