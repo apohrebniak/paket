@@ -58,7 +58,7 @@ pub async fn request_document(url_str: &str) -> anyhow::Result<Document> {
                 let domain = ServerName::try_from(host).unwrap().to_owned();
                 let connector = TlsConnector::from(TLS_CONFIG.clone());
                 let tls_stream = connector.connect(domain, tcp_stream).await?;
-                http_get(Stream::Tls(Box::new(tls_stream)), url).await?
+                http_get(Stream::Tls(tls_stream), url).await?
             }
         };
 
@@ -162,7 +162,7 @@ impl HtmlBodyReader {
 #[derive(Debug)]
 enum Stream {
     Plain(TcpStream),
-    Tls(Box<TlsStream<TcpStream>>),
+    Tls(TlsStream<TcpStream>),
 }
 
 impl Stream {
