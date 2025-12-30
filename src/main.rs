@@ -35,7 +35,7 @@ mod rss;
 type DbConnection = Arc<Mutex<Connection>>;
 
 /// Paket: read before it goes away
-#[derive(Clone, FromArgs)]
+#[derive(Debug, Clone, FromArgs)]
 #[argh(help_triggers("-h", "--help"))]
 struct Args {
     /// feed name
@@ -120,11 +120,11 @@ async fn serve(args: Arc<Args>) -> anyhow::Result<()> {
         .route("/feed.xml", get(handle_get_feed_xml))
         .route("/feed.html", get(handle_get_feed_html))
         .with_state(App {
-            args,
+            args: args.clone(),
             db_connection,
         });
 
-    println!("Serving at {port} ...");
+    println!("Serving {args:?}");
     axum::serve(tcp_listener, router).await?;
 
     Ok(())
@@ -211,8 +211,12 @@ struct FeedItem {
 }
 
 async fn add_article(url: &str, db_connection: DbConnection) -> anyhow::Result<()> {
-    let document = request_document(url).await?;
-    let article = timeout(Duration::from_secs(10), extract_article(document)).await??;
+    let fetch_and_extract = async {
+        let document = request_document(url).await?;
+        extract_article(document).await
+    };
+
+    let article = timeout(Duration::from_secs(5), fetch_and_extract).await??;
 
     let mut db_lock = db_connection.lock().unwrap();
     store_article(&mut db_lock, article)?;
