@@ -1,6 +1,5 @@
 use anyhow::bail;
 use memchr::memchr;
-use memchr::memmem;
 use rustls::ClientConfig;
 use rustls::RootCertStore;
 use rustls::pki_types::ServerName;
@@ -82,30 +81,46 @@ pub struct HtmlBodyReader {
 
 impl HtmlBodyReader {
     pub async fn extract_title(&mut self) -> anyhow::Result<String> {
-        const PREFIX: &str = "<title";
+        const PREFIX: &str = "title";
+
+        assert!(self.buffer.capacity() >= PREFIX.len());
 
         enum State {
-            Tag,
+            Start,
+            Name,
             Attributes,
             Value(Vec<u8>),
         }
 
-        let mut state = State::Tag;
-
-        let prefix_finder = memmem::Finder::new(PREFIX);
+        let mut state = State::Start;
 
         loop {
+            println!("loop");
             match &mut state {
-                State::Tag => match prefix_finder.find(self.buffer.as_slice()) {
-                    Some(prefix_start) => {
-                        let prefix_end = prefix_start + PREFIX.len();
-                        let _ = self.buffer.drain(..prefix_end);
-                        state = State::Attributes;
+                State::Start => match memchr(b'<', self.buffer.as_slice()) {
+                    Some(tag_start) => {
+                        let _ = self.buffer.drain(..=tag_start);
+                        state = State::Name;
+                        continue;
                     }
                     None => {
                         let _ = self.buffer.drain(..self.buffer.len() - PREFIX.len());
                     }
                 },
+                State::Name => {
+                    if self.buffer.len() >= PREFIX.len() {
+                        let tag_name = &self.buffer.as_slice()[..PREFIX.len()];
+
+                        let tag_found = PREFIX.eq_ignore_ascii_case(str::from_utf8(tag_name)?);
+
+                        if tag_found {
+                            state = State::Attributes;
+                            continue;
+                        } else {
+                            state = State::Start;
+                        }
+                    }
+                }
                 State::Attributes => match memchr(b'>', self.buffer.as_slice()) {
                     Some(tag_end) => {
                         let _ = self.buffer.drain(..=tag_end);
@@ -126,8 +141,11 @@ impl HtmlBodyReader {
                 }
             }
 
+            println!("reading more");
             self.stream.read_buf(&mut self.buffer).await?;
         }
+
+        println!("exit loop");
 
         let State::Value(title) = state else {
             unreachable!();
