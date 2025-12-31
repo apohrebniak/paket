@@ -1,18 +1,33 @@
 use anyhow::bail;
+use log::info;
+use log::trace;
 use memchr::memchr;
-use memchr::memmem;
+use pin_project::pin_project;
 use rustls::ClientConfig;
 use rustls::RootCertStore;
 use rustls::pki_types::ServerName;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::LazyLock;
+use std::task::Context;
+use std::task::Poll;
+use tokio::io::AsyncRead;
 use tokio::io::AsyncReadExt;
+use tokio::io::AsyncWrite;
 use tokio::io::AsyncWriteExt;
+use tokio::io::ReadBuf;
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 use tokio_rustls::client::TlsStream;
 use url::ParseError;
 use url::Url;
+
+const HTTP_BUFFER_SIZE: usize = 4 * 1024;
+const HTML_TITLE_TAG: &str = "title";
+
+const _: () = const {
+    assert!(HTTP_BUFFER_SIZE >= HTML_TITLE_TAG.len());
+};
 
 static TLS_CONFIG: LazyLock<Arc<rustls::ClientConfig>> = LazyLock::new(|| {
     let mut root_cert_store = RootCertStore::empty();
@@ -28,12 +43,14 @@ pub fn init_tls_certs() {
     LazyLock::force(&TLS_CONFIG);
 }
 
-pub async fn request_document(url_str: &str) -> anyhow::Result<Document> {
+pub async fn request_document(url_str: &str) -> anyhow::Result<Document<PlainOrTls>> {
     const MAX_REDIRECTS: usize = 5;
 
     let mut url = Url::parse(url_str)?;
 
     for _ in 0..MAX_REDIRECTS {
+        trace!("Requesting url: {url_str}");
+
         let scheme = match url.scheme() {
             "http" => Scheme::Http,
             "https" => Scheme::Https,
@@ -47,12 +64,12 @@ pub async fn request_document(url_str: &str) -> anyhow::Result<Document> {
         tcp_stream.set_nodelay(true)?;
 
         let response = match scheme {
-            Scheme::Http => http_get(Stream::Plain(tcp_stream), url).await?,
+            Scheme::Http => http_get(PlainOrTls::Plain(tcp_stream), url).await?,
             Scheme::Https => {
                 let domain = ServerName::try_from(host).unwrap().to_owned();
                 let connector = TlsConnector::from(TLS_CONFIG.clone());
                 let tls_stream = connector.connect(domain, tcp_stream).await?;
-                http_get(Stream::Tls(Box::new(tls_stream)), url).await?
+                http_get(PlainOrTls::Tls(Box::new(tls_stream)), url).await?
             }
         };
 
@@ -69,47 +86,68 @@ pub async fn request_document(url_str: &str) -> anyhow::Result<Document> {
     bail!("too many redirects")
 }
 
-pub enum Document {
+pub enum Document<S> {
     Unsupported(Url),
-    Html(Url, Box<HtmlBodyReader>),
+    Html(Url, HtmlBodyReader<S>),
     Pdf(Url),
 }
 
-pub struct HtmlBodyReader {
-    stream: Stream,
+pub struct HtmlBodyReader<S> {
+    stream: S,
     buffer: Vec<u8>,
 }
 
-impl HtmlBodyReader {
-    pub async fn extract_title(&mut self) -> anyhow::Result<String> {
-        const PREFIX: &str = "<title";
+impl<S: AsyncReadExt + Unpin> HtmlBodyReader<S> {
+    fn new(stream: S, buffer: Vec<u8>) -> Self {
+        Self { stream, buffer }
+    }
+
+    pub async fn extract_title(&mut self) -> anyhow::Result<Option<String>> {
+        debug_assert!(self.buffer.capacity() >= HTML_TITLE_TAG.len());
 
         enum State {
-            Tag,
+            Start,
+            Name,
             Attributes,
             Value(Vec<u8>),
         }
 
-        let mut state = State::Tag;
-
-        let prefix_finder = memmem::Finder::new(PREFIX);
+        let mut state = State::Start;
 
         loop {
             match &mut state {
-                State::Tag => match prefix_finder.find(self.buffer.as_slice()) {
-                    Some(prefix_start) => {
-                        let prefix_end = prefix_start + PREFIX.len();
-                        let _ = self.buffer.drain(..prefix_end);
-                        state = State::Attributes;
+                State::Start => match memchr(b'<', self.buffer.as_slice()) {
+                    Some(tag_start) => {
+                        let _ = self.buffer.drain(..=tag_start);
+                        state = State::Name;
+                        continue;
                     }
                     None => {
-                        let _ = self.buffer.drain(..self.buffer.len() - PREFIX.len());
+                        let up_to = self.buffer.len().saturating_sub(HTML_TITLE_TAG.len());
+                        let _ = self.buffer.drain(..up_to);
                     }
                 },
+                State::Name => {
+                    if self.buffer.len() >= HTML_TITLE_TAG.len() {
+                        let tag_name = &self.buffer.as_slice()[..HTML_TITLE_TAG.len()];
+
+                        let tag_found =
+                            HTML_TITLE_TAG.eq_ignore_ascii_case(str::from_utf8(tag_name)?);
+
+                        if tag_found {
+                            state = State::Attributes;
+                            continue;
+                        } else {
+                            state = State::Start;
+                            continue;
+                        }
+                    }
+                }
                 State::Attributes => match memchr(b'>', self.buffer.as_slice()) {
                     Some(tag_end) => {
                         let _ = self.buffer.drain(..=tag_end);
                         state = State::Value(Vec::new());
+                        continue;
                     }
                     None => {
                         self.buffer.clear();
@@ -119,43 +157,72 @@ impl HtmlBodyReader {
                     if let Some(tag_start) = memchr(b'<', self.buffer.as_slice()) {
                         title.extend_from_slice(&self.buffer.as_slice()[..tag_start]);
 
-                        break;
+                        return Ok(Some(String::from_utf8_lossy(title).into_owned()));
                     }
                     title.extend_from_slice(self.buffer.as_slice());
                     self.buffer.clear();
                 }
             }
 
-            self.stream.read_buf(&mut self.buffer).await?;
+            trace!("Reading more body");
+            let bytes_read = self.stream.read_buf(&mut self.buffer).await?;
+
+            if bytes_read == 0 {
+                info!("No title found!");
+                break;
+            }
         }
 
-        let State::Value(title) = state else {
-            unreachable!();
-        };
-
-        let title = String::from_utf8(title)?;
-        Ok(title)
+        Ok(None)
     }
 }
 
+#[pin_project(project = PlainOrTlsProj)]
 #[derive(Debug)]
-enum Stream {
-    Plain(TcpStream),
-    Tls(Box<TlsStream<TcpStream>>),
+pub enum PlainOrTls {
+    Plain(#[pin] TcpStream),
+    Tls(#[pin] Box<TlsStream<TcpStream>>),
 }
 
-impl Stream {
-    async fn write_all(&mut self, buf: &[u8]) -> tokio::io::Result<()> {
-        match self {
-            Self::Plain(stream) => stream.write_all(buf).await,
-            Self::Tls(stream) => stream.write_all(buf).await,
+impl AsyncRead for PlainOrTls {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<Result<(), std::io::Error>> {
+        match self.project() {
+            PlainOrTlsProj::Plain(stream) => stream.poll_read(cx, buf),
+            PlainOrTlsProj::Tls(stream) => stream.poll_read(cx, buf),
+        }
+    }
+}
+
+impl AsyncWrite for PlainOrTls {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<usize, std::io::Error>> {
+        match self.project() {
+            PlainOrTlsProj::Plain(stream) => stream.poll_write(cx, buf),
+            PlainOrTlsProj::Tls(stream) => stream.poll_write(cx, buf),
         }
     }
 
-    async fn read_buf(&mut self, buf: &mut Vec<u8>) -> tokio::io::Result<usize> {
-        match self {
-            Self::Plain(stream) => stream.read_buf(buf).await,
-            Self::Tls(stream) => stream.read_buf(buf).await,
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
+        match self.project() {
+            PlainOrTlsProj::Plain(stream) => stream.poll_flush(cx),
+            PlainOrTlsProj::Tls(stream) => stream.poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), std::io::Error>> {
+        match self.project() {
+            PlainOrTlsProj::Plain(stream) => stream.poll_shutdown(cx),
+            PlainOrTlsProj::Tls(stream) => stream.poll_shutdown(cx),
         }
     }
 }
@@ -165,14 +232,15 @@ enum Scheme {
     Https,
 }
 
-enum HttpResponse {
-    Ok(Document),
+enum HttpResponse<S> {
+    Ok(Document<S>),
     Redirect(Url),
 }
 
-async fn http_get(mut stream: Stream, url: Url) -> anyhow::Result<HttpResponse> {
-    const HTTP_BUFFER_SIZE: usize = 4 * 1024;
-
+async fn http_get<S: AsyncReadExt + AsyncWriteExt + Unpin>(
+    mut stream: S,
+    url: Url,
+) -> anyhow::Result<HttpResponse<S>> {
     enum ExpectedHeader {
         ContentType,
         Location,
@@ -210,7 +278,7 @@ async fn http_get(mut stream: Stream, url: Url) -> anyhow::Result<HttpResponse> 
         _ => bail!("unexpected status"),
     };
 
-    // read a header
+    // read header
     loop {
         let line = lines.next_line().await?;
         if line.is_empty() {
@@ -252,11 +320,8 @@ async fn http_get(mut stream: Stream, url: Url) -> anyhow::Result<HttpResponse> 
                         | "TEXT/HTML"
                         | "application/xhtml+xml"
                         | "APPLICATION/XHTML+XML" => {
-                            let http_body_reader = HtmlBodyReader {
-                                stream: lines.stream,
-                                buffer: lines.buffer,
-                            };
-                            Document::Html(url, Box::new(http_body_reader))
+                            let http_body_reader = HtmlBodyReader::new(lines.stream, lines.buffer);
+                            Document::Html(url, http_body_reader)
                         }
                         "application/pdf" | "APPLICATION/PDF" => Document::Pdf(url),
                         _ => Document::Unsupported(url),
@@ -269,23 +334,22 @@ async fn http_get(mut stream: Stream, url: Url) -> anyhow::Result<HttpResponse> 
     }
 }
 
-struct LineReader {
+/// Cannot use `tokio::io::Lines` because it may lose data when converting back to inner
+struct LineReader<S> {
     buffer: Vec<u8>,
-    stream: Stream,
+    stream: S,
     offset: usize,
 }
 
-impl LineReader {
-    fn new(buffer: Vec<u8>, stream: Stream) -> Self {
+impl<S: AsyncReadExt + Unpin> LineReader<S> {
+    fn new(buffer: Vec<u8>, stream: S) -> Self {
         Self {
             buffer,
             stream,
             offset: 0,
         }
     }
-}
 
-impl LineReader {
     async fn next_line(&mut self) -> anyhow::Result<&str> {
         if self.buffer.is_empty() {
             self.read_more().await?;
@@ -315,5 +379,59 @@ impl LineReader {
             bail!("no data")
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::http::HtmlBodyReader;
+
+    #[tokio::test]
+    async fn extract_title_case_insensitive() {
+        let html = br#"
+            <!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+            <HTML>
+                <HEAD>
+                    <META NAME="foo" CONTENT="bar">
+                    <tItLe>Hello Title!</tItLe>
+                </HEAD>
+                <BODY>
+                </BODY>
+            </HTML>
+        "#;
+
+        let mut body_reader = HtmlBodyReader::new(&html[..], Vec::with_capacity(64));
+        let title = body_reader.extract_title().await.unwrap();
+
+        assert_eq!(title, Some("Hello Title!".to_string()));
+    }
+
+    #[tokio::test]
+    async fn extract_title_with_non_empty_buffer() {
+        let html = b"<title>Read Me!</title>";
+
+        let mut body_reader = HtmlBodyReader::new(&html[..], vec![b'F'; 8]);
+        let title = body_reader.extract_title().await.unwrap();
+
+        assert_eq!(title, Some("Read Me!".to_string()));
+    }
+
+    #[tokio::test]
+    async fn extract_non_existent_title() {
+        let html = br#"
+            <!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+            <HTML>
+                <HEAD>
+                    <META NAME="foo" CONTENT="bar">
+                </HEAD>
+                <BODY>
+                </BODY>
+            </HTML>
+        "#;
+
+        let mut body_reader = HtmlBodyReader::new(&html[..], Vec::with_capacity(64));
+        let title = body_reader.extract_title().await.unwrap();
+
+        assert_eq!(title, None);
     }
 }

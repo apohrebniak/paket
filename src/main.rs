@@ -25,8 +25,12 @@ use uuid::Uuid;
 
 use crate::html::HtmlWriter;
 use crate::http::Document;
+use crate::http::PlainOrTls;
 use crate::http::request_document;
 use crate::rss::RssWriter;
+
+use log::error;
+use log::info;
 
 mod html;
 mod http;
@@ -35,7 +39,7 @@ mod rss;
 type DbConnection = Arc<Mutex<Connection>>;
 
 /// Paket: read before it goes away
-#[derive(Clone, FromArgs)]
+#[derive(Debug, Clone, FromArgs)]
 #[argh(help_triggers("-h", "--help"))]
 struct Args {
     /// feed name
@@ -84,6 +88,8 @@ fn main() -> anyhow::Result<()> {
     let args: Args = argh::from_env();
     let args = Arc::new(args);
 
+    env_logger::init();
+
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_io()
         .enable_time()
@@ -120,19 +126,21 @@ async fn serve(args: Arc<Args>) -> anyhow::Result<()> {
         .route("/feed.xml", get(handle_get_feed_xml))
         .route("/feed.html", get(handle_get_feed_html))
         .with_state(App {
-            args,
+            args: args.clone(),
             db_connection,
         });
 
-    println!("Serving at {port} ...");
+    info!("Serving {args:?}");
     axum::serve(tcp_listener, router).await?;
 
     Ok(())
 }
 
 async fn handle_save_article(State(state): State<App>, Form(save): Form<SaveForm>) -> StatusCode {
+    info!("save_article: {save:?}");
+
     if let Err(err) = add_article(&save.url, state.db_connection).await {
-        eprintln!("{err}");
+        error!("{err}");
         return StatusCode::INTERNAL_SERVER_ERROR;
     }
 
@@ -143,10 +151,12 @@ async fn handle_delete_article(
     State(state): State<App>,
     Form(delete): Form<DeleteForm>,
 ) -> Redirect {
+    info!("delete_article: {delete:?}");
+
     let mut db_lock = state.db_connection.lock().unwrap();
 
     if let Err(err) = delete_article(&mut db_lock, &delete.guid) {
-        eprintln!("{err}");
+        error!("{err}");
     }
 
     Redirect::to("/feed.html")
@@ -161,6 +171,8 @@ async fn handle_get_feed_html(State(state): State<App>) -> Response<String> {
 }
 
 async fn handle_get_feed<T: FeedWriter>(state: App) -> Response<String> {
+    info!("get_feed");
+
     let result = {
         let mut db_lock = state.db_connection.lock().unwrap();
 
@@ -170,7 +182,7 @@ async fn handle_get_feed<T: FeedWriter>(state: App) -> Response<String> {
     let items = match result {
         Ok(items) => items,
         Err(err) => {
-            eprintln!("{err}");
+            error!("{err}");
             return Response::builder()
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
                 .body(String::new())
@@ -211,8 +223,12 @@ struct FeedItem {
 }
 
 async fn add_article(url: &str, db_connection: DbConnection) -> anyhow::Result<()> {
-    let document = request_document(url).await?;
-    let article = timeout(Duration::from_secs(10), extract_article(document)).await??;
+    let fetch_and_extract = async {
+        let document = request_document(url).await?;
+        extract_article(document).await
+    };
+
+    let article = timeout(Duration::from_secs(5), fetch_and_extract).await??;
 
     let mut db_lock = db_connection.lock().unwrap();
     store_article(&mut db_lock, article)?;
@@ -220,7 +236,7 @@ async fn add_article(url: &str, db_connection: DbConnection) -> anyhow::Result<(
     Ok(())
 }
 
-async fn extract_article(document: Document) -> anyhow::Result<Article> {
+async fn extract_article(document: Document<PlainOrTls>) -> anyhow::Result<Article> {
     let (url, title) = match document {
         Document::Unsupported(url) => {
             let title = format!("[???] {url}");
@@ -237,6 +253,7 @@ async fn extract_article(document: Document) -> anyhow::Result<Article> {
         }
         Document::Html(url, mut http_body_reader) => {
             let title = http_body_reader.extract_title().await?;
+            let title = title.unwrap_or_else(|| "[NO TITLE]".to_string());
             (url, title)
         }
     };
