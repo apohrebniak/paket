@@ -65,7 +65,7 @@ pub async fn request_document(url_str: &str) -> anyhow::Result<Document<PlainOrT
                 let domain = ServerName::try_from(host).unwrap().to_owned();
                 let connector = TlsConnector::from(TLS_CONFIG.clone());
                 let tls_stream = connector.connect(domain, tcp_stream).await?;
-                http_get(PlainOrTls::Tls(tls_stream), url).await?
+                http_get(PlainOrTls::Tls(Box::new(tls_stream)), url).await?
             }
         };
 
@@ -170,7 +170,7 @@ impl<S: AsyncReadExt + Unpin> HtmlBodyReader<S> {
 #[derive(Debug)]
 pub enum PlainOrTls {
     Plain(#[pin] TcpStream),
-    Tls(#[pin] TlsStream<TcpStream>),
+    Tls(#[pin] Box<TlsStream<TcpStream>>),
 }
 
 impl AsyncRead for PlainOrTls {
