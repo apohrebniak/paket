@@ -25,8 +25,8 @@ use uuid::Uuid;
 
 use crate::html::HtmlWriter;
 use crate::http::Document;
-use crate::http::request_document;
 use crate::http::PlainOrTls;
+use crate::http::request_document;
 use crate::rss::RssWriter;
 
 mod html;

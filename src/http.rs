@@ -1,30 +1,30 @@
 use anyhow::bail;
 use memchr::memchr;
+use pin_project::pin_project;
 use rustls::ClientConfig;
 use rustls::RootCertStore;
 use rustls::pki_types::ServerName;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::LazyLock;
-use tokio::io::AsyncReadExt;
-use tokio::io::AsyncWriteExt;
+use std::task::Context;
+use std::task::Poll;
 use tokio::io::AsyncRead;
+use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWrite;
+use tokio::io::AsyncWriteExt;
+use tokio::io::ReadBuf;
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 use tokio_rustls::client::TlsStream;
 use url::ParseError;
 use url::Url;
-use pin_project::pin_project;
-use std::task::Context;
-use std::pin::Pin;
-use tokio::io::ReadBuf;
-use std::task::Poll;
 
 const HTTP_BUFFER_SIZE: usize = 4 * 1024;
 const HTML_TITLE_TAG: &str = "title";
 
 const _: () = const {
-        assert!(HTTP_BUFFER_SIZE >= HTML_TITLE_TAG.len());
+    assert!(HTTP_BUFFER_SIZE >= HTML_TITLE_TAG.len());
 };
 
 static TLS_CONFIG: LazyLock<Arc<rustls::ClientConfig>> = LazyLock::new(|| {
@@ -114,14 +114,17 @@ impl<S: AsyncReadExt + Unpin> HtmlBodyReader<S> {
                         continue;
                     }
                     None => {
-                        let _ = self.buffer.drain(..self.buffer.len() - HTML_TITLE_TAG.len());
+                        let _ = self
+                            .buffer
+                            .drain(..self.buffer.len() - HTML_TITLE_TAG.len());
                     }
                 },
                 State::Name => {
                     if self.buffer.len() >= HTML_TITLE_TAG.len() {
                         let tag_name = &self.buffer.as_slice()[..HTML_TITLE_TAG.len()];
 
-                        let tag_found = HTML_TITLE_TAG.eq_ignore_ascii_case(str::from_utf8(tag_name)?);
+                        let tag_found =
+                            HTML_TITLE_TAG.eq_ignore_ascii_case(str::from_utf8(tag_name)?);
 
                         if tag_found {
                             state = State::Attributes;
@@ -174,7 +177,11 @@ pub enum PlainOrTls {
 }
 
 impl AsyncRead for PlainOrTls {
-    fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<Result<(), std::io::Error>> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<Result<(), std::io::Error>> {
         match self.project() {
             PlainOrTlsProj::Plain(stream) => stream.poll_read(cx, buf),
             PlainOrTlsProj::Tls(stream) => stream.poll_read(cx, buf),
@@ -183,7 +190,11 @@ impl AsyncRead for PlainOrTls {
 }
 
 impl AsyncWrite for PlainOrTls {
-    fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize, std::io::Error>> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<usize, std::io::Error>> {
         match self.project() {
             PlainOrTlsProj::Plain(stream) => stream.poll_write(cx, buf),
             PlainOrTlsProj::Tls(stream) => stream.poll_write(cx, buf),
@@ -197,7 +208,10 @@ impl AsyncWrite for PlainOrTls {
         }
     }
 
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), std::io::Error>> {
         match self.project() {
             PlainOrTlsProj::Plain(stream) => stream.poll_shutdown(cx),
             PlainOrTlsProj::Tls(stream) => stream.poll_shutdown(cx),
@@ -215,7 +229,10 @@ enum HttpResponse<S> {
     Redirect(Url),
 }
 
-async fn http_get<S: AsyncReadExt + AsyncWriteExt + Unpin>(mut stream: S, url: Url) -> anyhow::Result<HttpResponse<S>> {
+async fn http_get<S: AsyncReadExt + AsyncWriteExt + Unpin>(
+    mut stream: S,
+    url: Url,
+) -> anyhow::Result<HttpResponse<S>> {
     enum ExpectedHeader {
         ContentType,
         Location,
@@ -312,6 +329,7 @@ async fn http_get<S: AsyncReadExt + AsyncWriteExt + Unpin>(mut stream: S, url: U
     }
 }
 
+/// Cannot use `tokio::io::Lines` because it may lose data when converting back to inner
 struct LineReader<S> {
     buffer: Vec<u8>,
     stream: S,
