@@ -7,11 +7,18 @@ use std::sync::Arc;
 use std::sync::LazyLock;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
+use tokio::io::AsyncRead;
+use tokio::io::AsyncWrite;
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 use tokio_rustls::client::TlsStream;
 use url::ParseError;
 use url::Url;
+use pin_project::pin_project;
+use std::task::Context;
+use std::pin::Pin;
+use tokio::io::ReadBuf;
+use std::task::Poll;
 
 const HTTP_BUFFER_SIZE: usize = 4 * 1024;
 const HTML_TITLE_TAG: &str = "title";
@@ -34,7 +41,7 @@ pub fn init_tls_certs() {
     LazyLock::force(&TLS_CONFIG);
 }
 
-pub async fn request_document(url_str: &str) -> anyhow::Result<Document> {
+pub async fn request_document(url_str: &str) -> anyhow::Result<Document<PlainOrTls>> {
     const MAX_REDIRECTS: usize = 5;
 
     let mut url = Url::parse(url_str)?;
@@ -53,12 +60,12 @@ pub async fn request_document(url_str: &str) -> anyhow::Result<Document> {
         tcp_stream.set_nodelay(true)?;
 
         let response = match scheme {
-            Scheme::Http => http_get(Stream::Plain(tcp_stream), url).await?,
+            Scheme::Http => http_get(PlainOrTls::Plain(tcp_stream), url).await?,
             Scheme::Https => {
                 let domain = ServerName::try_from(host).unwrap().to_owned();
                 let connector = TlsConnector::from(TLS_CONFIG.clone());
                 let tls_stream = connector.connect(domain, tcp_stream).await?;
-                http_get(Stream::Tls(tls_stream), url).await?
+                http_get(PlainOrTls::Tls(tls_stream), url).await?
             }
         };
 
@@ -75,18 +82,18 @@ pub async fn request_document(url_str: &str) -> anyhow::Result<Document> {
     bail!("too many redirects")
 }
 
-pub enum Document {
+pub enum Document<S> {
     Unsupported(Url),
-    Html(Url, HtmlBodyReader),
+    Html(Url, HtmlBodyReader<S>),
     Pdf(Url),
 }
 
-pub struct HtmlBodyReader {
-    stream: Stream,
+pub struct HtmlBodyReader<S> {
+    stream: S,
     buffer: Vec<u8>,
 }
 
-impl HtmlBodyReader {
+impl<S: AsyncReadExt + Unpin> HtmlBodyReader<S> {
     pub async fn extract_title(&mut self) -> anyhow::Result<String> {
         enum State {
             Start,
@@ -159,24 +166,41 @@ impl HtmlBodyReader {
     }
 }
 
+#[pin_project(project = PlainOrTlsProj)]
 #[derive(Debug)]
-enum Stream {
-    Plain(TcpStream),
-    Tls(TlsStream<TcpStream>),
+pub enum PlainOrTls {
+    Plain(#[pin] TcpStream),
+    Tls(#[pin] TlsStream<TcpStream>),
 }
 
-impl Stream {
-    async fn write_all(&mut self, buf: &[u8]) -> tokio::io::Result<()> {
-        match self {
-            Self::Plain(stream) => stream.write_all(buf).await,
-            Self::Tls(stream) => stream.write_all(buf).await,
+impl AsyncRead for PlainOrTls {
+    fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<Result<(), std::io::Error>> {
+        match self.project() {
+            PlainOrTlsProj::Plain(stream) => stream.poll_read(cx, buf),
+            PlainOrTlsProj::Tls(stream) => stream.poll_read(cx, buf),
+        }
+    }
+}
+
+impl AsyncWrite for PlainOrTls {
+    fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize, std::io::Error>> {
+        match self.project() {
+            PlainOrTlsProj::Plain(stream) => stream.poll_write(cx, buf),
+            PlainOrTlsProj::Tls(stream) => stream.poll_write(cx, buf),
         }
     }
 
-    async fn read_buf(&mut self, buf: &mut Vec<u8>) -> tokio::io::Result<usize> {
-        match self {
-            Self::Plain(stream) => stream.read_buf(buf).await,
-            Self::Tls(stream) => stream.read_buf(buf).await,
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
+        match self.project() {
+            PlainOrTlsProj::Plain(stream) => stream.poll_flush(cx),
+            PlainOrTlsProj::Tls(stream) => stream.poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
+        match self.project() {
+            PlainOrTlsProj::Plain(stream) => stream.poll_shutdown(cx),
+            PlainOrTlsProj::Tls(stream) => stream.poll_shutdown(cx),
         }
     }
 }
@@ -186,12 +210,12 @@ enum Scheme {
     Https,
 }
 
-enum HttpResponse {
-    Ok(Document),
+enum HttpResponse<S> {
+    Ok(Document<S>),
     Redirect(Url),
 }
 
-async fn http_get(mut stream: Stream, url: Url) -> anyhow::Result<HttpResponse> {
+async fn http_get<S: AsyncReadExt + AsyncWriteExt + Unpin>(mut stream: S, url: Url) -> anyhow::Result<HttpResponse<S>> {
     enum ExpectedHeader {
         ContentType,
         Location,
@@ -288,23 +312,21 @@ async fn http_get(mut stream: Stream, url: Url) -> anyhow::Result<HttpResponse> 
     }
 }
 
-struct LineReader {
+struct LineReader<S> {
     buffer: Vec<u8>,
-    stream: Stream,
+    stream: S,
     offset: usize,
 }
 
-impl LineReader {
-    fn new(buffer: Vec<u8>, stream: Stream) -> Self {
+impl<S: AsyncReadExt + Unpin> LineReader<S> {
+    fn new(buffer: Vec<u8>, stream: S) -> Self {
         Self {
             buffer,
             stream,
             offset: 0,
         }
     }
-}
 
-impl LineReader {
     async fn next_line(&mut self) -> anyhow::Result<&str> {
         if self.buffer.is_empty() {
             self.read_more().await?;

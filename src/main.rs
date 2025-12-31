@@ -26,6 +26,7 @@ use uuid::Uuid;
 use crate::html::HtmlWriter;
 use crate::http::Document;
 use crate::http::request_document;
+use crate::http::PlainOrTls;
 use crate::rss::RssWriter;
 
 mod html;
@@ -224,7 +225,7 @@ async fn add_article(url: &str, db_connection: DbConnection) -> anyhow::Result<(
     Ok(())
 }
 
-async fn extract_article(document: Document) -> anyhow::Result<Article> {
+async fn extract_article(document: Document<PlainOrTls>) -> anyhow::Result<Article> {
     let (url, title) = match document {
         Document::Unsupported(url) => {
             let title = format!("[???] {url}");
