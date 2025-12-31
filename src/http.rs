@@ -94,7 +94,13 @@ pub struct HtmlBodyReader<S> {
 }
 
 impl<S: AsyncReadExt + Unpin> HtmlBodyReader<S> {
-    pub async fn extract_title(&mut self) -> anyhow::Result<String> {
+    fn new(stream: S, buffer: Vec<u8>) -> Self {
+        Self { stream, buffer }
+    }
+
+    pub async fn extract_title(&mut self) -> anyhow::Result<Option<String>> {
+        debug_assert!(self.buffer.capacity() >= HTML_TITLE_TAG.len());
+
         enum State {
             Start,
             Name,
@@ -116,7 +122,7 @@ impl<S: AsyncReadExt + Unpin> HtmlBodyReader<S> {
                     None => {
                         let _ = self
                             .buffer
-                            .drain(..self.buffer.len() - HTML_TITLE_TAG.len());
+                            .drain(..self.buffer.len().saturating_sub(HTML_TITLE_TAG.len()));
                     }
                 },
                 State::Name => {
@@ -147,7 +153,7 @@ impl<S: AsyncReadExt + Unpin> HtmlBodyReader<S> {
                     if let Some(tag_start) = memchr(b'<', self.buffer.as_slice()) {
                         title.extend_from_slice(&self.buffer.as_slice()[..tag_start]);
 
-                        break;
+                        return Ok(Some(String::from_utf8_lossy(title).into_owned()));
                     }
                     title.extend_from_slice(self.buffer.as_slice());
                     self.buffer.clear();
@@ -155,17 +161,15 @@ impl<S: AsyncReadExt + Unpin> HtmlBodyReader<S> {
             }
 
             println!("reading more");
-            self.stream.read_buf(&mut self.buffer).await?;
+            let bytes_read = self.stream.read_buf(&mut self.buffer).await?;
+
+            if bytes_read == 0 {
+                println!("no title");
+                break;
+            }
         }
 
-        println!("exit loop");
-
-        let State::Value(title) = state else {
-            unreachable!();
-        };
-
-        let title = String::from_utf8(title)?;
-        Ok(title)
+        Ok(None)
     }
 }
 
@@ -312,10 +316,7 @@ async fn http_get<S: AsyncReadExt + AsyncWriteExt + Unpin>(
                         | "TEXT/HTML"
                         | "application/xhtml+xml"
                         | "APPLICATION/XHTML+XML" => {
-                            let http_body_reader = HtmlBodyReader {
-                                stream: lines.stream,
-                                buffer: lines.buffer,
-                            };
+                            let http_body_reader = HtmlBodyReader::new(lines.stream, lines.buffer);
                             Document::Html(url, http_body_reader)
                         }
                         "application/pdf" | "APPLICATION/PDF" => Document::Pdf(url),
@@ -374,5 +375,59 @@ impl<S: AsyncReadExt + Unpin> LineReader<S> {
             bail!("no data")
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::http::HtmlBodyReader;
+
+    #[tokio::test]
+    async fn extract_title_case_insensitive() {
+        let html = br#"
+            <!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+            <HTML>
+                <HEAD>
+                    <META NAME="foo" CONTENT="bar">
+                    <tItLe>Hello Title!</tItLe>
+                </HEAD>
+                <BODY>
+                </BODY>
+            </HTML>
+        "#;
+
+        let mut body_reader = HtmlBodyReader::new(&html[..], Vec::with_capacity(64));
+        let title = body_reader.extract_title().await.unwrap();
+
+        assert_eq!(title, Some("Hello Title!".to_string()));
+    }
+
+    #[tokio::test]
+    async fn extract_title_with_non_empty_buffer() {
+        let html = b"<title>Read Me!</title>";
+
+        let mut body_reader = HtmlBodyReader::new(&html[..], vec![b'F'; 8]);
+        let title = body_reader.extract_title().await.unwrap();
+
+        assert_eq!(title, Some("Read Me!".to_string()));
+    }
+
+    #[tokio::test]
+    async fn extract_non_existent_title() {
+        let html = br#"
+            <!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+            <HTML>
+                <HEAD>
+                    <META NAME="foo" CONTENT="bar">
+                </HEAD>
+                <BODY>
+                </BODY>
+            </HTML>
+        "#;
+
+        let mut body_reader = HtmlBodyReader::new(&html[..], Vec::with_capacity(64));
+        let title = body_reader.extract_title().await.unwrap();
+
+        assert_eq!(title, None);
     }
 }

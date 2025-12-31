@@ -242,6 +242,7 @@ async fn extract_article(document: Document<PlainOrTls>) -> anyhow::Result<Artic
         }
         Document::Html(url, mut http_body_reader) => {
             let title = http_body_reader.extract_title().await?;
+            let title = title.unwrap_or_else(|| "[NO TITLE]".to_string());
             (url, title)
         }
     };
