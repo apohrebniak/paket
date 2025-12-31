@@ -29,6 +29,9 @@ use crate::http::PlainOrTls;
 use crate::http::request_document;
 use crate::rss::RssWriter;
 
+use log::error;
+use log::info;
+
 mod html;
 mod http;
 mod rss;
@@ -85,6 +88,8 @@ fn main() -> anyhow::Result<()> {
     let args: Args = argh::from_env();
     let args = Arc::new(args);
 
+    env_logger::init();
+
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_io()
         .enable_time()
@@ -125,15 +130,17 @@ async fn serve(args: Arc<Args>) -> anyhow::Result<()> {
             db_connection,
         });
 
-    println!("Serving {args:?}");
+    info!("Serving {args:?}");
     axum::serve(tcp_listener, router).await?;
 
     Ok(())
 }
 
 async fn handle_save_article(State(state): State<App>, Form(save): Form<SaveForm>) -> StatusCode {
+    info!("save_article: {save:?}");
+
     if let Err(err) = add_article(&save.url, state.db_connection).await {
-        eprintln!("{err}");
+        error!("{err}");
         return StatusCode::INTERNAL_SERVER_ERROR;
     }
 
@@ -144,10 +151,12 @@ async fn handle_delete_article(
     State(state): State<App>,
     Form(delete): Form<DeleteForm>,
 ) -> Redirect {
+    info!("delete_article: {delete:?}");
+
     let mut db_lock = state.db_connection.lock().unwrap();
 
     if let Err(err) = delete_article(&mut db_lock, &delete.guid) {
-        eprintln!("{err}");
+        error!("{err}");
     }
 
     Redirect::to("/feed.html")
@@ -162,6 +171,8 @@ async fn handle_get_feed_html(State(state): State<App>) -> Response<String> {
 }
 
 async fn handle_get_feed<T: FeedWriter>(state: App) -> Response<String> {
+    info!("get_feed");
+
     let result = {
         let mut db_lock = state.db_connection.lock().unwrap();
 
@@ -171,7 +182,7 @@ async fn handle_get_feed<T: FeedWriter>(state: App) -> Response<String> {
     let items = match result {
         Ok(items) => items,
         Err(err) => {
-            eprintln!("{err}");
+            error!("{err}");
             return Response::builder()
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
                 .body(String::new())

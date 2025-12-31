@@ -1,4 +1,6 @@
 use anyhow::bail;
+use log::info;
+use log::trace;
 use memchr::memchr;
 use pin_project::pin_project;
 use rustls::ClientConfig;
@@ -47,6 +49,8 @@ pub async fn request_document(url_str: &str) -> anyhow::Result<Document<PlainOrT
     let mut url = Url::parse(url_str)?;
 
     for _ in 0..MAX_REDIRECTS {
+        trace!("Requesting url: {url_str}");
+
         let scheme = match url.scheme() {
             "http" => Scheme::Http,
             "https" => Scheme::Https,
@@ -111,7 +115,6 @@ impl<S: AsyncReadExt + Unpin> HtmlBodyReader<S> {
         let mut state = State::Start;
 
         loop {
-            println!("loop");
             match &mut state {
                 State::Start => match memchr(b'<', self.buffer.as_slice()) {
                     Some(tag_start) => {
@@ -120,9 +123,8 @@ impl<S: AsyncReadExt + Unpin> HtmlBodyReader<S> {
                         continue;
                     }
                     None => {
-                        let _ = self
-                            .buffer
-                            .drain(..self.buffer.len().saturating_sub(HTML_TITLE_TAG.len()));
+                        let up_to = self.buffer.len().saturating_sub(HTML_TITLE_TAG.len());
+                        let _ = self.buffer.drain(..up_to);
                     }
                 },
                 State::Name => {
@@ -137,6 +139,7 @@ impl<S: AsyncReadExt + Unpin> HtmlBodyReader<S> {
                             continue;
                         } else {
                             state = State::Start;
+                            continue;
                         }
                     }
                 }
@@ -144,6 +147,7 @@ impl<S: AsyncReadExt + Unpin> HtmlBodyReader<S> {
                     Some(tag_end) => {
                         let _ = self.buffer.drain(..=tag_end);
                         state = State::Value(Vec::new());
+                        continue;
                     }
                     None => {
                         self.buffer.clear();
@@ -160,11 +164,11 @@ impl<S: AsyncReadExt + Unpin> HtmlBodyReader<S> {
                 }
             }
 
-            println!("reading more");
+            trace!("Reading more body");
             let bytes_read = self.stream.read_buf(&mut self.buffer).await?;
 
             if bytes_read == 0 {
-                println!("no title");
+                info!("No title found!");
                 break;
             }
         }
@@ -274,7 +278,7 @@ async fn http_get<S: AsyncReadExt + AsyncWriteExt + Unpin>(
         _ => bail!("unexpected status"),
     };
 
-    // read a header
+    // read header
     loop {
         let line = lines.next_line().await?;
         if line.is_empty() {
