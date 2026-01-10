@@ -11,6 +11,7 @@ use axum::routing::put;
 use axum::serve::ListenerExt;
 use core::net::Ipv4Addr;
 use duckdb::Connection;
+use duckdb::Transaction;
 use duckdb::params;
 use http::init_tls_certs;
 use serde::Deserialize;
@@ -102,15 +103,9 @@ fn main() -> anyhow::Result<()> {
 async fn serve(args: Arc<Args>) -> anyhow::Result<()> {
     init_tls_certs();
 
-    let db_connection = Connection::open(&args.db)?;
-    db_connection.execute(
-        "CREATE TABLE IF NOT EXISTS articles (
-            timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
-            title TEXT NOT NULL,
-            link TEXT NOT NULL,
-            guid TEXT NOT NULL)",
-        [],
-    )?;
+    let mut db_connection = Connection::open(&args.db)?;
+
+    setup_tables(&mut db_connection)?;
     let db_connection = Arc::new(Mutex::new(db_connection));
 
     let port = args.port;
@@ -261,32 +256,67 @@ async fn extract_article(document: Document<PlainOrTls>) -> anyhow::Result<Artic
     Ok(Article { url, title })
 }
 
+fn setup_tables(db_connection: &mut Connection) -> anyhow::Result<()> {
+    db_connection.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS articles (
+            timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
+            title TEXT NOT NULL,
+            link TEXT NOT NULL,
+            guid TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS stats_per_week_of_year (
+            week_of_year INT64 NOT NULL PRIMARY KEY,
+            articles_count INT64 NOT NULL);",
+    )?;
+
+    Ok(())
+}
+
 fn store_article(db_connection: &mut Connection, article: Article) -> anyhow::Result<()> {
     let uuid = Uuid::new_v5(&Uuid::NAMESPACE_URL, article.url.as_str().as_bytes());
     let guid = uuid.to_string();
 
-    db_connection.execute("DELETE FROM articles WHERE guid = ?", [&guid])?;
-
-    db_connection.execute(
+    let tx = db_connection.transaction()?;
+    tx.execute("DELETE FROM articles WHERE guid = ?", [&guid])?;
+    tx.execute(
         "INSERT INTO articles 
         (title, link, guid, timestamp)
         VALUES
         (?, ?, ?, current_timestamp)",
         params![article.title, article.url.as_str(), &guid],
     )?;
+    update_weekly_stats(&tx)?;
+    tx.commit()?;
 
     Ok(())
 }
 
 fn delete_article(db_connection: &mut Connection, guid: &str) -> anyhow::Result<()> {
-    db_connection.execute("DELETE FROM articles WHERE guid = ?", [guid])?;
+    let tx = db_connection.transaction()?;
+    tx.execute("DELETE FROM articles WHERE guid = ?", [guid])?;
+    update_weekly_stats(&tx)?;
+    tx.commit()?;
     Ok(())
 }
 
 fn delete_old_articles(db_connection: &mut Connection, args: &Args) -> anyhow::Result<()> {
-    db_connection.execute(
+    let tx = db_connection.transaction()?;
+    tx.execute(
         "DELETE FROM articles WHERE (current_timestamp AT TIME ZONE 'UTC' - timestamp AT TIME ZONE 'UTC') > INTERVAL (?) DAY",
         [args.ttl],
+    )?;
+    update_weekly_stats(&tx)?;
+    tx.commit()?;
+    Ok(())
+}
+
+fn update_weekly_stats(tx: &Transaction) -> anyhow::Result<()> {
+    tx.execute_batch(
+        "
+        INSERT OR REPLACE INTO stats_per_week_of_year (week_of_year, articles_count) 
+        VALUES (weekofyear(current_timestamp), (SELECT count(*) FROM articles));
+
+        DELETE FROM stats_per_week_of_year WHERE week_of_year > weekofyear(current_timestamp)",
     )?;
     Ok(())
 }

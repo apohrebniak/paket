@@ -67,7 +67,7 @@ impl FeedWriter for HtmlWriter {
                 <span>Sep</span>
                 <span>Dec</span>
             </div>
-            "#
+            "#,
         );
 
         buffer.push_str(
@@ -127,7 +127,7 @@ impl FeedWriter for HtmlWriter {
                 <div class="week-square" style="--articles: 18;" title="18 articles"></div>
                 <div class="week-square" style="--articles: 16;" title="16 articles"></div>
             </div>
-            "#
+            "#,
         );
 
         buffer.push_str("<ul class=\"feed-items\">");
