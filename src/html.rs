@@ -58,6 +58,78 @@ impl FeedWriter for HtmlWriter {
 
         buffer.push_str("</div>");
 
+        buffer.push_str(
+            r#"
+            <div class="month-labels">
+                <span>Jan</span>
+                <span>Mar</span>
+                <span>Jun</span>
+                <span>Sep</span>
+                <span>Dec</span>
+            </div>
+            "#
+        );
+
+        buffer.push_str(
+            r#"
+            <div class="calendar" style="--max-articles: 20;">
+                <div class="week-square" style="--articles: 18;" title="18 articles"></div>
+                <div class="week-square" style="--articles: 12;" title="12 articles"></div>
+                <div class="week-square" style="--articles: 8;" title="8 articles"></div>
+                <div class="week-square" style="--articles: 16;" title="16 articles"></div>
+                <div class="week-square" style="--articles: 20;" title="20 articles"></div>
+                <div class="week-square" style="--articles: 6;" title="6 articles"></div>
+                <div class="week-square" style="--articles: 14;" title="14 articles"></div>
+                <div class="week-square" style="--articles: 10;" title="10 articles"></div>
+                <div class="week-square" style="--articles: 18;" title="18 articles"></div>
+                <div class="week-square" style="--articles: 8;" title="8 articles"></div>
+                <div class="week-square" style="--articles: 4;" title="4 articles"></div>
+                <div class="week-square" style="--articles: 12;" title="12 articles"></div>
+                <div class="week-square" style="--articles: 16;" title="16 articles"></div>
+                <div class="week-square" style="--articles: 20;" title="20 articles"></div>
+                <div class="week-square" style="--articles: 6;" title="6 articles"></div>
+                <div class="week-square" style="--articles: 14;" title="14 articles"></div>
+                <div class="week-square" style="--articles: 10;" title="10 articles"></div>
+                <div class="week-square" style="--articles: 18;" title="18 articles"></div>
+                <div class="week-square" style="--articles: 8;" title="8 articles"></div>
+                <div class="week-square" style="--articles: 16;" title="16 articles"></div>
+                <div class="week-square" style="--articles: 4;" title="4 articles"></div>
+                <div class="week-square" style="--articles: 12;" title="12 articles"></div>
+                <div class="week-square" style="--articles: 20;" title="20 articles"></div>
+                <div class="week-square" style="--articles: 10;" title="10 articles"></div>
+                <div class="week-square" style="--articles: 14;" title="14 articles"></div>
+                <div class="week-square" style="--articles: 6;" title="6 articles"></div>
+                <div class="week-square" style="--articles: 18;" title="18 articles"></div>
+                <div class="week-square" style="--articles: 8;" title="8 articles"></div>
+                <div class="week-square" style="--articles: 16;" title="16 articles"></div>
+                <div class="week-square" style="--articles: 12;" title="12 articles"></div>
+                <div class="week-square" style="--articles: 20;" title="20 articles"></div>
+                <div class="week-square" style="--articles: 6;" title="6 articles"></div>
+                <div class="week-square" style="--articles: 14;" title="14 articles"></div>
+                <div class="week-square" style="--articles: 10;" title="10 articles"></div>
+                <div class="week-square" style="--articles: 18;" title="18 articles"></div>
+                <div class="week-square" style="--articles: 8;" title="8 articles"></div>
+                <div class="week-square" style="--articles: 4;" title="4 articles"></div>
+                <div class="week-square" style="--articles: 16;" title="16 articles"></div>
+                <div class="week-square" style="--articles: 12;" title="12 articles"></div>
+                <div class="week-square" style="--articles: 20;" title="20 articles"></div>
+                <div class="week-square" style="--articles: 10;" title="10 articles"></div>
+                <div class="week-square" style="--articles: 14;" title="14 articles"></div>
+                <div class="week-square" style="--articles: 6;" title="6 articles"></div>
+                <div class="week-square" style="--articles: 18;" title="18 articles"></div>
+                <div class="week-square" style="--articles: 8;" title="8 articles"></div>
+                <div class="week-square" style="--articles: 16;" title="16 articles"></div>
+                <div class="week-square" style="--articles: 12;" title="12 articles"></div>
+                <div class="week-square" style="--articles: 20;" title="20 articles"></div>
+                <div class="week-square" style="--articles: 6;" title="6 articles"></div>
+                <div class="week-square" style="--articles: 14;" title="14 articles"></div>
+                <div class="week-square" style="--articles: 10;" title="10 articles"></div>
+                <div class="week-square" style="--articles: 18;" title="18 articles"></div>
+                <div class="week-square" style="--articles: 16;" title="16 articles"></div>
+            </div>
+            "#
+        );
+
         buffer.push_str("<ul class=\"feed-items\">");
 
         Self { buffer }
