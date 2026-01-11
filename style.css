@@ -27,7 +27,7 @@ body {
     aspect-ratio: 1;
     background-color: #14b32f;
     border-radius: 1px;
-    transition: opacity 0.2s ease;
+    transition: opacity 0.1s ease;
     opacity: calc(var(--articles) / var(--max-articles));
 }
 

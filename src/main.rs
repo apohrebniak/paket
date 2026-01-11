@@ -171,10 +171,14 @@ async fn handle_get_feed<T: FeedWriter>(state: App) -> Response<String> {
     let result = {
         let mut db_lock = state.db_connection.lock().unwrap();
 
-        delete_old_articles(&mut db_lock, &state.args).and_then(|_| fetch_feed(&mut db_lock))
+        delete_old_articles(&mut db_lock, &state.args)
+            .and_then(|_| fetch_feed(&mut db_lock))
+            .and_then(|feed_items| {
+                fetch_weekly_stats(&mut db_lock).map(|weekly_items| (feed_items, weekly_items))
+            })
     };
 
-    let items = match result {
+    let (feed_items, weekly_items) = match result {
         Ok(items) => items,
         Err(err) => {
             error!("{err}");
@@ -185,7 +189,7 @@ async fn handle_get_feed<T: FeedWriter>(state: App) -> Response<String> {
         }
     };
 
-    let feed = build_feed::<T>(items.into_iter(), &state.args);
+    let feed = build_feed::<T>(feed_items, weekly_items, &state.args);
 
     Response::builder()
         .status(StatusCode::OK)
@@ -215,6 +219,10 @@ struct FeedItem {
     link: String,
     pub_date: String,
     guid: String,
+}
+
+struct WeeklyItem {
+    articles_count: i64,
 }
 
 async fn add_article(url: &str, db_connection: DbConnection) -> anyhow::Result<()> {
@@ -346,14 +354,42 @@ fn fetch_feed(db_connection: &mut Connection) -> anyhow::Result<Vec<FeedItem>> {
     Ok(items)
 }
 
-fn build_feed<T: FeedWriter>(items: impl Iterator<Item = FeedItem>, args: &Args) -> String {
+fn fetch_weekly_stats(db_connection: &mut Connection) -> anyhow::Result<Vec<WeeklyItem>> {
+    let mut select_stmt = db_connection.prepare(
+        "SELECT 
+        articles_count
+        FROM stats_per_week_of_year
+        ORDER BY week_of_year ASC",
+    )?;
+
+    let mut rows = select_stmt.query([])?;
+    let count = rows.as_ref().unwrap().row_count();
+
+    let mut items = Vec::with_capacity(count);
+    while let Some(row) = rows.next()? {
+        let item = WeeklyItem {
+            articles_count: i64::max(0, row.get(0)?),
+        };
+        items.push(item);
+    }
+
+    Ok(items)
+}
+
+// TODO the rss writer doesn't write weekly items. so api is dubious. type state writer?
+fn build_feed<T: FeedWriter>(
+    feed_items: Vec<FeedItem>,
+    weekly_items: Vec<WeeklyItem>,
+    args: &Args,
+) -> String {
     let mut writer = T::new(
         &args.name,
         &args.desc,
         args.link.as_str(),
         SystemTime::now(),
     );
-    writer.write_items(items);
+    writer.write_weekly_items(weekly_items);
+    writer.write_feed_items(feed_items);
     writer.finish()
 }
 
@@ -362,7 +398,8 @@ trait FeedWriter {
 
     fn new(title: &str, description: &str, link: &str, time: SystemTime) -> Self;
 
-    fn write_items(&mut self, items: impl Iterator<Item = FeedItem>);
+    fn write_weekly_items(&mut self, items: Vec<WeeklyItem>);
+    fn write_feed_items(&mut self, items: Vec<FeedItem>);
 
     fn finish(self) -> String;
 }

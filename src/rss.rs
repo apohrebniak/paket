@@ -1,5 +1,6 @@
 use crate::FeedItem;
 use crate::FeedWriter;
+use crate::WeeklyItem;
 use httpdate::fmt_http_date;
 use std::time::SystemTime;
 
@@ -43,7 +44,10 @@ impl FeedWriter for RssWriter {
         Self { buffer }
     }
 
-    fn write_items(&mut self, items: impl Iterator<Item = FeedItem>) {
+    fn write_weekly_items(&mut self, _: Vec<WeeklyItem>) { /* noop */
+    }
+
+    fn write_feed_items(&mut self, items: Vec<FeedItem>) {
         let buffer = &mut self.buffer;
 
         for item in items {
