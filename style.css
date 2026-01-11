@@ -6,10 +6,37 @@ body {
     padding: 20px;
 }
 
-.feed-info {
+.calendar {
+    display: flex;
+    gap: 3px;
     margin-bottom: 30px;
     padding-bottom: 20px;
     border-bottom: 1px solid #ccc;
+}
+
+.month-labels {
+    display: flex;
+    justify-content: space-between;
+    font-size: 10px;
+    color: #999;
+    margin-bottom: 4px;
+}
+
+.week-square {
+    flex: 1;
+    aspect-ratio: 1;
+    background-color: #14b32f;
+    border-radius: 1px;
+    transition: opacity 0.1s ease;
+    opacity: calc(var(--articles) / var(--max-articles));
+}
+
+.week-square:hover {
+    opacity: 1 !important;
+}
+
+.feed-info {
+    margin-bottom: 15px;
 }
 
 .feed-info p {

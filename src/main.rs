@@ -11,6 +11,7 @@ use axum::routing::put;
 use axum::serve::ListenerExt;
 use core::net::Ipv4Addr;
 use duckdb::Connection;
+use duckdb::Transaction;
 use duckdb::params;
 use http::init_tls_certs;
 use serde::Deserialize;
@@ -102,15 +103,9 @@ fn main() -> anyhow::Result<()> {
 async fn serve(args: Arc<Args>) -> anyhow::Result<()> {
     init_tls_certs();
 
-    let db_connection = Connection::open(&args.db)?;
-    db_connection.execute(
-        "CREATE TABLE IF NOT EXISTS articles (
-            timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
-            title TEXT NOT NULL,
-            link TEXT NOT NULL,
-            guid TEXT NOT NULL)",
-        [],
-    )?;
+    let mut db_connection = Connection::open(&args.db)?;
+
+    setup_tables(&mut db_connection)?;
     let db_connection = Arc::new(Mutex::new(db_connection));
 
     let port = args.port;
@@ -176,10 +171,14 @@ async fn handle_get_feed<T: FeedWriter>(state: App) -> Response<String> {
     let result = {
         let mut db_lock = state.db_connection.lock().unwrap();
 
-        delete_old_articles(&mut db_lock, &state.args).and_then(|_| fetch_feed(&mut db_lock))
+        delete_old_articles(&mut db_lock, &state.args)
+            .and_then(|_| fetch_feed(&mut db_lock))
+            .and_then(|feed_items| {
+                fetch_weekly_stats(&mut db_lock).map(|weekly_items| (feed_items, weekly_items))
+            })
     };
 
-    let items = match result {
+    let (feed_items, weekly_items) = match result {
         Ok(items) => items,
         Err(err) => {
             error!("{err}");
@@ -190,7 +189,7 @@ async fn handle_get_feed<T: FeedWriter>(state: App) -> Response<String> {
         }
     };
 
-    let feed = build_feed::<T>(items.into_iter(), &state.args);
+    let feed = build_feed::<T>(feed_items, weekly_items, &state.args);
 
     Response::builder()
         .status(StatusCode::OK)
@@ -220,6 +219,10 @@ struct FeedItem {
     link: String,
     pub_date: String,
     guid: String,
+}
+
+struct WeeklyItem {
+    articles_count: i64,
 }
 
 async fn add_article(url: &str, db_connection: DbConnection) -> anyhow::Result<()> {
@@ -261,32 +264,67 @@ async fn extract_article(document: Document<PlainOrTls>) -> anyhow::Result<Artic
     Ok(Article { url, title })
 }
 
+fn setup_tables(db_connection: &mut Connection) -> anyhow::Result<()> {
+    db_connection.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS articles (
+            timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
+            title TEXT NOT NULL,
+            link TEXT NOT NULL,
+            guid TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS stats_per_week_of_year (
+            week_of_year INT64 NOT NULL PRIMARY KEY,
+            articles_count INT64 NOT NULL);",
+    )?;
+
+    Ok(())
+}
+
 fn store_article(db_connection: &mut Connection, article: Article) -> anyhow::Result<()> {
     let uuid = Uuid::new_v5(&Uuid::NAMESPACE_URL, article.url.as_str().as_bytes());
     let guid = uuid.to_string();
 
-    db_connection.execute("DELETE FROM articles WHERE guid = ?", [&guid])?;
-
-    db_connection.execute(
+    let tx = db_connection.transaction()?;
+    tx.execute("DELETE FROM articles WHERE guid = ?", [&guid])?;
+    tx.execute(
         "INSERT INTO articles 
         (title, link, guid, timestamp)
         VALUES
         (?, ?, ?, current_timestamp)",
         params![article.title, article.url.as_str(), &guid],
     )?;
+    update_weekly_stats(&tx)?;
+    tx.commit()?;
 
     Ok(())
 }
 
 fn delete_article(db_connection: &mut Connection, guid: &str) -> anyhow::Result<()> {
-    db_connection.execute("DELETE FROM articles WHERE guid = ?", [guid])?;
+    let tx = db_connection.transaction()?;
+    tx.execute("DELETE FROM articles WHERE guid = ?", [guid])?;
+    update_weekly_stats(&tx)?;
+    tx.commit()?;
     Ok(())
 }
 
 fn delete_old_articles(db_connection: &mut Connection, args: &Args) -> anyhow::Result<()> {
-    db_connection.execute(
+    let tx = db_connection.transaction()?;
+    tx.execute(
         "DELETE FROM articles WHERE (current_timestamp AT TIME ZONE 'UTC' - timestamp AT TIME ZONE 'UTC') > INTERVAL (?) DAY",
         [args.ttl],
+    )?;
+    update_weekly_stats(&tx)?;
+    tx.commit()?;
+    Ok(())
+}
+
+fn update_weekly_stats(tx: &Transaction) -> anyhow::Result<()> {
+    tx.execute_batch(
+        "
+        INSERT OR REPLACE INTO stats_per_week_of_year (week_of_year, articles_count) 
+        VALUES (weekofyear(current_timestamp), (SELECT count(*) FROM articles));
+
+        DELETE FROM stats_per_week_of_year WHERE week_of_year > weekofyear(current_timestamp)",
     )?;
     Ok(())
 }
@@ -316,14 +354,42 @@ fn fetch_feed(db_connection: &mut Connection) -> anyhow::Result<Vec<FeedItem>> {
     Ok(items)
 }
 
-fn build_feed<T: FeedWriter>(items: impl Iterator<Item = FeedItem>, args: &Args) -> String {
+fn fetch_weekly_stats(db_connection: &mut Connection) -> anyhow::Result<Vec<WeeklyItem>> {
+    let mut select_stmt = db_connection.prepare(
+        "SELECT 
+        articles_count
+        FROM stats_per_week_of_year
+        ORDER BY week_of_year ASC",
+    )?;
+
+    let mut rows = select_stmt.query([])?;
+    let count = rows.as_ref().unwrap().row_count();
+
+    let mut items = Vec::with_capacity(count);
+    while let Some(row) = rows.next()? {
+        let item = WeeklyItem {
+            articles_count: i64::max(0, row.get(0)?),
+        };
+        items.push(item);
+    }
+
+    Ok(items)
+}
+
+// TODO the rss writer doesn't write weekly items. so api is dubious. type state writer?
+fn build_feed<T: FeedWriter>(
+    feed_items: Vec<FeedItem>,
+    weekly_items: Vec<WeeklyItem>,
+    args: &Args,
+) -> String {
     let mut writer = T::new(
         &args.name,
         &args.desc,
         args.link.as_str(),
         SystemTime::now(),
     );
-    writer.write_items(items);
+    writer.write_weekly_items(weekly_items);
+    writer.write_feed_items(feed_items);
     writer.finish()
 }
 
@@ -332,7 +398,8 @@ trait FeedWriter {
 
     fn new(title: &str, description: &str, link: &str, time: SystemTime) -> Self;
 
-    fn write_items(&mut self, items: impl Iterator<Item = FeedItem>);
+    fn write_weekly_items(&mut self, items: Vec<WeeklyItem>);
+    fn write_feed_items(&mut self, items: Vec<FeedItem>);
 
     fn finish(self) -> String;
 }
