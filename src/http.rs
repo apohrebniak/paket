@@ -249,7 +249,7 @@ async fn http_get<S: AsyncReadExt + AsyncWriteExt + Unpin>(
 
     let mut request = String::with_capacity(HTTP_BUFFER_SIZE);
     request.push_str("GET ");
-    request.push_str(&url[Position::BeforePath..]);
+    request.push_str(&url[Position::BeforePath..Position::AfterQuery]);
     request.push_str(" HTTP/1.1\r\nHost: ");
     request.push_str(url.host_str().unwrap());
     request.push_str("\r\nConnection: close\r\nAccept-Encoding: \r\nAccept: text/html,application/xhtml+xml,application/pdf,*/*;q=0\r\nUser-Agent: paket\r\n\r\n");
