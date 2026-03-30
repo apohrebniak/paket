@@ -277,7 +277,7 @@ async fn http_get<S: AsyncReadExt + AsyncWriteExt + Unpin>(
     let expected_header = match status {
         "200" | "203" => ExpectedHeader::ContentType,
         "300" | "301" | "302" | "303" | "307" | "308" => ExpectedHeader::Location,
-        _ => bail!("unexpected status"),
+        _ => bail!("unexpected status: {status}"),
     };
 
     // read header
