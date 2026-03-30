@@ -273,6 +273,7 @@ async fn http_get<S: AsyncReadExt + AsyncWriteExt + Unpin>(
         bail!("no status")
     };
 
+
     let expected_header = match status {
         "200" | "203" => ExpectedHeader::ContentType,
         "300" | "301" | "302" | "303" | "307" | "308" => ExpectedHeader::Location,
@@ -428,6 +429,18 @@ mod tests {
                 <BODY>
                 </BODY>
             </HTML>
+        "#;
+
+        let mut body_reader = HtmlBodyReader::new(&html[..], Vec::with_capacity(64));
+        let title = body_reader.extract_title().await.unwrap();
+
+        assert_eq!(title, None);
+    }
+
+    #[tokio::test]
+    async fn foo() {
+        let html = br#"
+            <title>Bryan Cantrill: Andreessens Folly - The False Dichotomy of Software and Hardware - YouTube</title>
         "#;
 
         let mut body_reader = HtmlBodyReader::new(&html[..], Vec::with_capacity(64));
